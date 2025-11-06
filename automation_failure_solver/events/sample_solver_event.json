@@ -1,0 +1,15 @@
+{
+  "eventType": "failure",
+  "timestamp": "2023-10-01T12:00:00Z",
+  "details": {
+    "service": "example_service",
+    "errorCode": "500",
+    "errorMessage": "Internal Server Error",
+    "requestId": "abc123",
+    "userId": "user@example.com"
+  },
+  "context": {
+    "environment": "production",
+    "region": "us-east-1"
+  }
+}

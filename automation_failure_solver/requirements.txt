@@ -1,0 +1,5 @@
+# requirements.txt
+
+boto3
+requests
+pytest

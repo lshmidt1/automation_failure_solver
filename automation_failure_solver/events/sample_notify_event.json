@@ -1,0 +1,16 @@
+{
+  "notification": {
+    "type": "failure",
+    "message": "Sample failure notification event",
+    "timestamp": "2023-10-01T12:00:00Z",
+    "details": {
+      "error_code": "500",
+      "error_message": "Internal Server Error",
+      "service": "example_service",
+      "context": {
+        "request_id": "12345",
+        "user_id": "user_67890"
+      }
+    }
+  }
+}
