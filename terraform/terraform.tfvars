@@ -1,0 +1,6 @@
+﻿jenkins_url         = "https://jenkins.crbcloud.com/"
+jenkins_user        = "svcAzureAPIUser"
+jenkins_token       = "your_jenkins_api_token"
+repo_https_url      = "https://dev.azure.com/crossriverbank/_git/VisaDirectRail"
+azdo_pat            = "your_azure_devops_personal_access_token"
+slack_webhook_url   = ""

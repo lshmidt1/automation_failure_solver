@@ -1,28 +1,11 @@
-variable "lambda_region" {
-  description = "The AWS region where the Lambda functions will be deployed"
-  type        = string
-  default     = "us-east-1"
-}
+variable "project"               { type = string  default = "automation_failure_solver" }
+variable "aws_region"            { type = string  default = "us-east-1" }
+variable "slack_webhook_url"     { type = string  default = "" } 
+variable "jenkins_url"           { type = string  default = "https://jenkins.crbcloud.com"}
+variable "repo_https_url"        { type = string } # Azure DevOps HTTPS clone URL
+variable "repo_branch"           { type = string  default = "main" }
 
-variable "lambda_memory_size" {
-  description = "The amount of memory allocated to the Lambda functions"
-  type        = number
-  default     = 128
-}
 
-variable "lambda_timeout" {
-  description = "The timeout for the Lambda functions in seconds"
-  type        = number
-  default     = 30
-}
-
-variable "sqs_queue_name" {
-  description = "The name of the SQS queue for analyzing failures"
-  type        = string
-}
-
-variable "api_gateway_stage" {
-  description = "The stage name for the API Gateway"
-  type        = string
-  default     = "dev"
-}
+variable "jenkins_user"  { type = string default = "svcAzureAPIUser"}
+variable "jenkins_token" { type = string }
+variable "azdo_pat"      { type = string }
