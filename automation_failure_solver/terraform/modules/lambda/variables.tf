@@ -1,33 +1,11 @@
-variable "lambda_function_name" {
-  description = "The name of the Lambda function"
-  type        = string
-}
+variable "project"               { type = string  default = "automation_failure_solver" }
+variable "aws_region"            { type = string  default = "us-east-1" }
+variable "slack_webhook_url"     { type = string  default = "" } 
+variable "jenkins_url"           { type = string  default = "https://jenkins.crbcloud.com"}
+variable "repo_https_url"        { type = string } # Azure DevOps HTTPS clone URL
+variable "repo_branch"           { type = string  default = "main" }
 
-variable "lambda_runtime" {
-  description = "The runtime environment for the Lambda function"
-  type        = string
-  default     = "python3.8"
-}
 
-variable "lambda_handler" {
-  description = "The handler for the Lambda function"
-  type        = string
-}
-
-variable "lambda_memory_size" {
-  description = "The amount of memory available to the function"
-  type        = number
-  default     = 128
-}
-
-variable "lambda_timeout" {
-  description = "The function execution time at which Lambda should terminate the function"
-  type        = number
-  default     = 3
-}
-
-variable "environment_variables" {
-  description = "Environment variables for the Lambda function"
-  type        = map(string)
-  default     = {}
-}
+variable "jenkins_user"  { type = string default = "svcAzureAPIUser"}
+variable "jenkins_token" { type = string }
+variable "azdo_pat"      { type = string }

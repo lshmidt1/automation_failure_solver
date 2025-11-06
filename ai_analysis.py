@@ -1,1 +1,0 @@
-# Claude API interactions for Automation Failure Solver
