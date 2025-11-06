@@ -1,4 +1,0 @@
-# File: /automation_failure_solver/automation_failure_solver/lambdas/solver/requirements.txt
-requests
-boto3
-numpy
