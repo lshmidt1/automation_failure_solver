@@ -1,4 +1,21 @@
-﻿# Terraform
+﻿# Secrets and credentials
+local/config.json
+config.json
+*.json.local
+
+# AWS credentials
+.aws/
+**/.aws/
+
+# Environment variables
+.env
+.env.local
+
+# SQLite databases
+*.db
+local/*.db
+
+# Terraform
 *.tfstate
 *.tfstate.*
 *.tfvars
