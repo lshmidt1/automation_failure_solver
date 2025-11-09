@@ -18,8 +18,11 @@ local/*.db
 # Terraform
 *.tfstate
 *.tfstate.*
-*.tfvars
 .terraform/
+terraform/*.tfstate
+terraform/*.tfstate.backup
+terraform/.terraform/
+*.tfvars
 .terraform.lock.hcl
 crash.log
 crash.*.log
@@ -62,3 +65,7 @@ credentials.txt
 
 # Logs
 *.log
+
+# Test outputs
+output.json
+test_prompt.json
