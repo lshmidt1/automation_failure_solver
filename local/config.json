@@ -1,0 +1,9 @@
+{
+  "anthropic_api_key": "SKIP_FOR_NOW_WILL_USE_AWS_LATER",
+  "jenkins_url": "https://jenkins.crbcloud.com",
+  "jenkins_user": "lshmidt",
+  "jenkins_token": "1187feca1dd76014874b8360426e430958",
+  "azdo_repo_url": "https://dev.azure.com/crossriverbank/_git/VisaDirectRail",
+  "azdo_pat": "29CPiAvQDwQjVRb8RhnS2FuqgJprej62YFtLuEbYPcoKSRN8DYCNJQQJ99BKACAAAAAiIfYjAAAGAZDO1lrN",
+  "slack_webhook_url": ""
+}
