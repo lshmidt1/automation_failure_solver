@@ -3,7 +3,7 @@ Jenkins Failure Analyzer - AWS Bedrock Version
 Uses boto3 to call Claude via AWS Bedrock instead of Anthropic API
 """
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_from_directory
 import boto3
 import json
 import sqlite3
@@ -11,8 +11,11 @@ import requests
 import base64
 from datetime import datetime
 import traceback
+from flask_cors import CORS
+import os
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder='../dashboard/dist')
+CORS(app)  # Enable CORS for React dev server
 
 # Load configuration
 with open('config.json', 'r') as f:
@@ -427,3 +430,11 @@ if __name__ == '__main__':
     print("="*60 + "\n")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
+
+    # Serve React app
+@app.route('/', defaults={'path': ''})
+@app.route('/<path:path>')
+def serve_react(path):
+    if path and os.path.exists(os.path.join(app.static_folder, path)):
+        return send_from_directory(app.static_folder, path)
+    return send_from_directory(app.static_folder, 'index.html')
