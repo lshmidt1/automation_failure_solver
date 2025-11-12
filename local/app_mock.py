@@ -136,4 +136,4 @@ if __name__ == '__main__':
     print("📊 Results: http://localhost:5000/results")
     print("="*60 + "\n")
     
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=5001, debug=True)
