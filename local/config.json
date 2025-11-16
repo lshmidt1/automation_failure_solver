@@ -1,8 +1,8 @@
-﻿{
-    "local_repo_path":  "C:\\Users\\lshmidt\\IdeaProjects\\VisaDirect",
-    "azdo_pat":  "",
-    "jenkins_url":  "",
-    "azdo_repo_url":  "",
-    "jenkins_token":  "",
-    "jenkins_user":  ""
+{
+  "local_repo_path": "C:\\Users\\lshmidt\\IdeaProjects\\VisaDirect",
+  "jenkins_url": "",
+  "jenkins_user": "",
+  "jenkins_token": "",
+  "azdo_repo_url": "",
+  "azdo_pat": ""
 }

@@ -1,0 +1,797 @@
+"""
+TestNG Analyzer with LOCAL REPOSITORY Integration
+Analyzes test failures with actual test code from your local repo
+"""
+
+from flask import Flask, request, jsonify, render_template_string
+from flask_cors import CORS
+import boto3
+import json
+import sqlite3
+import os
+from datetime import datetime
+import traceback
+import xml.etree.ElementTree as ET
+from pathlib import Path
+import requests
+from werkzeug.utils import secure_filename
+import re
+
+app = Flask(__name__)
+CORS(app)
+
+# Configuration
+UPLOAD_FOLDER = "uploads"
+ALLOWED_EXTENSIONS = {'xml'}
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+
+# Load config
+try:
+    with open('config.json', 'r') as f:
+        CONFIG = json.load(f)
+        LOCAL_REPO_PATH = CONFIG.get('local_repo_path', '')
+        print(f"📁 Local Repository: {LOCAL_REPO_PATH if LOCAL_REPO_PATH else 'Not configured'}")
+except:
+    CONFIG = {}
+    LOCAL_REPO_PATH = ''
+    print("⚠️ config.json not found")
+
+# Initialize Bedrock client
+try:
+    bedrock_client = boto3.client('bedrock-runtime', region_name='us-east-1')
+    print("✅ Bedrock client initialized")
+except Exception as e:
+    print(f"⚠️ Warning: Could not initialize Bedrock client: {e}")
+    bedrock_client = None
+
+# ===== DATABASE INITIALIZATION =====
+
+def init_db():
+    """Initialize database"""
+    conn = sqlite3.connect('failures.db')
+    c = conn.cursor()
+    
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS analyses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_name TEXT,
+            build_number INTEGER,
+            timestamp TEXT,
+            status TEXT,
+            root_cause TEXT,
+            suggested_fix TEXT,
+            confidence TEXT,
+            full_response TEXT,
+            report_file TEXT,
+            test_name TEXT,
+            error_message TEXT,
+            stack_trace TEXT,
+            failure_category TEXT,
+            prevention_tips TEXT,
+            estimated_fix_time TEXT,
+            test_code TEXT,
+            code_file_path TEXT
+        )
+    ''')
+    
+    conn.commit()
+    conn.close()
+
+init_db()
+
+# ===== LOCAL REPOSITORY FUNCTIONS =====
+
+def find_test_file_in_repo(class_name, test_name):
+    """Find the test file in local repository"""
+    if not LOCAL_REPO_PATH or not os.path.exists(LOCAL_REPO_PATH):
+        return None, None
+    
+    try:
+        # Convert class name to file path
+        # com.example.tests.LoginTest -> com/example/tests/LoginTest.java
+        potential_path = class_name.replace('.', os.sep) + '.java'
+        
+        # Search common test directories
+        test_dirs = ['src/test/java', 'test', 'tests', 'src/main/test']
+        
+        for test_dir in test_dirs:
+            full_path = os.path.join(LOCAL_REPO_PATH, test_dir, potential_path)
+            if os.path.exists(full_path):
+                print(f"   ✅ Found test file: {full_path}")
+                return full_path, test_dir
+        
+        # If not found by class name, search for file name
+        class_file = class_name.split('.')[-1] + '.java'
+        
+        for root, dirs, files in os.walk(LOCAL_REPO_PATH):
+            if class_file in files:
+                full_path = os.path.join(root, class_file)
+                print(f"   ✅ Found test file by search: {full_path}")
+                return full_path, root
+        
+        print(f"   ⚠️ Test file not found for: {class_name}")
+        return None, None
+    
+    except Exception as e:
+        print(f"   ❌ Error finding test file: {e}")
+        return None, None
+
+def extract_test_method(file_path, test_name):
+    """Extract specific test method from file"""
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        # Try to extract the specific test method
+        # Pattern: @Test ... public void testName() { ... }
+        pattern = rf'(@Test.*?public.*?{test_name}.*?\{{(?:[^{{}}]|\{{(?:[^{{}}]|\{{[^{{}}]*\}})*\}})*\}})'
+        match = re.search(pattern, content, re.DOTALL | re.MULTILINE)
+        
+        if match:
+            method_code = match.group(1)
+            # Limit to reasonable size
+            return method_code[:2000]
+        
+        # Fallback: try simpler pattern
+        pattern2 = rf'(public.*?{test_name}.*?\{{.*?\n.*?\}})'
+        match2 = re.search(pattern2, content, re.DOTALL)
+        
+        if match2:
+            return match2.group(1)[:2000]
+        
+        # Last resort: return chunk around the test name
+        if test_name in content:
+            idx = content.find(test_name)
+            start = max(0, idx - 500)
+            end = min(len(content), idx + 1500)
+            return content[start:end]
+        
+        return None
+    
+    except Exception as e:
+        print(f"   ❌ Error extracting method: {e}")
+        return None
+
+def get_related_page_objects(file_path):
+    """Find related page objects or helper classes"""
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        # Find imports
+        imports = re.findall(r'import\s+([\w\.]+);', content)
+        
+        # Find page object references (common patterns)
+        page_objects = []
+        for imp in imports:
+            if 'page' in imp.lower() or 'helper' in imp.lower():
+                page_objects.append(imp)
+        
+        return page_objects[:5]  # Return top 5
+    
+    except Exception as e:
+        return []
+
+# ===== HELPER FUNCTIONS =====
+
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+def parse_testng_report(file_path):
+    """Parse TestNG XML report and extract failure information"""
+    try:
+        tree = ET.parse(file_path)
+        root = tree.getroot()
+        
+        failures = []
+        
+        for test_case in root.findall('.//test-method'):
+            status = test_case.get('status', 'PASS')
+            
+            if status == 'FAIL':
+                test_name = test_case.get('name', 'Unknown Test')
+                signature = test_case.get('signature', '')
+                class_name = signature.split('(')[0] if signature else 'Unknown'
+                
+                # Extract class name from signature
+                # Example: com.example.tests.LoginTest.testInvalidLogin(org.testng.ITestContext)
+                if '.' in class_name:
+                    parts = class_name.rsplit('.', 1)
+                    class_name = parts[0]  # Get class without method
+                
+                exception = test_case.find('.//exception')
+                error_message = ""
+                stack_trace = ""
+                
+                if exception is not None:
+                    message_elem = exception.find('message')
+                    if message_elem is not None:
+                        error_message = message_elem.text or ""
+                    
+                    full_trace = exception.find('full-stacktrace')
+                    if full_trace is not None:
+                        stack_trace = full_trace.text or ""
+                
+                failures.append({
+                    'test_name': test_name,
+                    'class_name': class_name,
+                    'error_message': error_message,
+                    'stack_trace': stack_trace,
+                    'status': status
+                })
+        
+        return failures
+    
+    except Exception as e:
+        print(f"❌ Error parsing TestNG report {file_path}: {e}")
+        return []
+
+def analyze_testng_failure_with_claude(failure_data):
+    """Analyze TestNG failure with LOCAL CODE CONTEXT"""
+    
+    if not bedrock_client:
+        return {
+            "root_cause": f"Test '{failure_data['test_name']}' failed: {failure_data['error_message'][:200]}",
+            "suggested_fix": "AWS Bedrock not available.",
+            "confidence": "low",
+            "failure_category": "unknown",
+            "prevention_tips": "Review error manually",
+            "estimated_fix_time": "unknown",
+            "explanation": "AWS Bedrock not available"
+        }
+    
+    try:
+        # Try to find the actual test code
+        test_file_path, test_dir = find_test_file_in_repo(
+            failure_data['class_name'], 
+            failure_data['test_name']
+        )
+        
+        test_code = None
+        code_context = ""
+        
+        if test_file_path:
+            test_code = extract_test_method(test_file_path, failure_data['test_name'])
+            
+            if test_code:
+                code_context = f"""
+
+## ACTUAL TEST CODE FROM YOUR REPOSITORY
+
+**File:** {test_file_path}
+
+```java
+{test_code}
+```
+
+This is the ACTUAL test code from your local repository. Analyze this specific code when providing the root cause and fix.
+"""
+                
+                # Get related page objects
+                page_objects = get_related_page_objects(test_file_path)
+                if page_objects:
+                    code_context += f"""
+
+**Related Page Objects/Helpers:**
+{chr(10).join(['- ' + po for po in page_objects])}
+"""
+        
+        # Enhanced prompt with actual code
+        prompt = f"""You are an expert test automation engineer analyzing a REAL test failure from a live codebase.
+
+## Test Failure Details
+
+**Test Name:** {failure_data['test_name']}
+**Test Class:** {failure_data['class_name']}
+
+**Error Message:**
+```
+{failure_data['error_message']}
+```
+
+**Stack Trace:**
+```
+{failure_data['stack_trace'][:3000]}
+```
+
+{code_context}
+
+## Analysis Requirements
+
+Since you have the ACTUAL test code, provide a highly specific analysis:
+
+1. **Root Cause**: Explain EXACTLY what line/code caused the failure and WHY
+2. **Code-Specific Fix**: Provide the EXACT code change needed (show before/after)
+3. **Category**: Classify the failure type
+4. **Prevention**: Specific code patterns or practices to avoid this
+
+## Important Analysis Guidelines
+
+- Reference specific lines from the test code above
+- Explain what the test was trying to do at the failure point
+- If it's a locator issue, suggest the exact locator improvement
+- If it's a timing issue, suggest the exact wait strategy
+- If it's an assertion, explain what was expected vs actual
+
+## Response Format (JSON)
+
+{{
+  "root_cause": "Specific explanation referencing the actual code (2-3 sentences)",
+  "failure_category": "test_code_issue|application_bug|environment_issue|test_data_problem|timing_issue",
+  "suggested_fix": "EXACT code change needed with before/after examples",
+  "code_snippet_fix": "Show the exact code fix if applicable",
+  "prevention_tips": "Specific code patterns to prevent this",
+  "confidence": "high|medium|low",
+  "estimated_fix_time": "5 minutes|30 minutes|2 hours|1 day",
+  "explanation": "Detailed technical analysis with line-by-line reasoning"
+}}
+
+Be extremely specific since you have the actual code. Reference line numbers, method names, and exact code elements.
+"""
+        
+        # Call Claude
+        response = bedrock_client.invoke_model(
+            modelId='anthropic.claude-3-5-sonnet-20241022-v2:0',
+            body=json.dumps({
+                "anthropic_version": "bedrock-2023-05-31",
+                "max_tokens": 4000,  # Increased for code-specific analysis
+                "temperature": 0.2,   # Even lower for precise code analysis
+                "messages": [{"role": "user", "content": prompt}]
+            })
+        )
+        
+        response_body = json.loads(response['body'].read())
+        response_text = response_body['content'][0]['text']
+        
+        # Extract JSON
+        start = response_text.find('{')
+        end = response_text.rfind('}') + 1
+        if start >= 0 and end > start:
+            analysis = json.loads(response_text[start:end])
+            
+            # Add code info
+            if test_code:
+                analysis['test_code'] = test_code
+                analysis['code_file_path'] = test_file_path
+            
+            # Ensure all fields
+            if 'failure_category' not in analysis:
+                analysis['failure_category'] = 'unknown'
+            if 'prevention_tips' not in analysis:
+                analysis['prevention_tips'] = 'Review test patterns'
+            if 'estimated_fix_time' not in analysis:
+                analysis['estimated_fix_time'] = '30 minutes'
+            if 'code_snippet_fix' not in analysis:
+                analysis['code_snippet_fix'] = ''
+        else:
+            analysis = {
+                "root_cause": response_text[:800],
+                "failure_category": "unknown",
+                "suggested_fix": "See analysis",
+                "code_snippet_fix": "",
+                "prevention_tips": "Improve error handling",
+                "confidence": "medium",
+                "estimated_fix_time": "30 minutes",
+                "explanation": response_text,
+                "test_code": test_code if test_code else "",
+                "code_file_path": test_file_path if test_file_path else ""
+            }
+        
+        return analysis
+    
+    except Exception as e:
+        print(f"❌ Claude error: {e}")
+        traceback.print_exc()
+        return {
+            "root_cause": failure_data['error_message'][:500],
+            "failure_category": "unknown",
+            "suggested_fix": "Review stack trace",
+            "code_snippet_fix": "",
+            "prevention_tips": "Add error handling",
+            "confidence": "low",
+            "estimated_fix_time": "unknown",
+            "explanation": str(e),
+            "test_code": "",
+            "code_file_path": ""
+        }
+
+def process_testng_file(file_path, filename):
+    """Process TestNG file with local code context"""
+    failures = parse_testng_report(file_path)
+    
+    if not failures:
+        return {
+            "status": "no_failures",
+            "message": "No failures found",
+            "file": filename
+        }
+    
+    results = []
+    
+    for failure in failures:
+        print(f"\n   🔍 Analyzing: {failure['test_name']}")
+        print(f"      Class: {failure['class_name']}")
+        
+        analysis = analyze_testng_failure_with_claude(failure)
+        
+        # Save to database
+        conn = sqlite3.connect('failures.db')
+        c = conn.cursor()
+        
+        build_number = int(datetime.utcnow().timestamp())
+        
+        c.execute('''
+            INSERT INTO analyses 
+            (job_name, build_number, timestamp, status, root_cause, suggested_fix, 
+             confidence, full_response, report_file, test_name, error_message, stack_trace,
+             failure_category, prevention_tips, estimated_fix_time, test_code, code_file_path)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            failure['class_name'], build_number, datetime.utcnow().isoformat(), 'completed',
+            analysis['root_cause'], analysis['suggested_fix'], analysis['confidence'],
+            json.dumps(analysis), filename, failure['test_name'], failure['error_message'],
+            failure['stack_trace'], analysis.get('failure_category', 'unknown'),
+            analysis.get('prevention_tips', ''), analysis.get('estimated_fix_time', 'unknown'),
+            analysis.get('test_code', ''), analysis.get('code_file_path', '')
+        ))
+        
+        conn.commit()
+        conn.close()
+        
+        results.append({
+            "test_name": failure['test_name'],
+            "class_name": failure['class_name'],
+            "root_cause": analysis['root_cause'],
+            "suggested_fix": analysis['suggested_fix'],
+            "confidence": analysis['confidence'],
+            "failure_category": analysis.get('failure_category'),
+            "prevention_tips": analysis.get('prevention_tips'),
+            "estimated_fix_time": analysis.get('estimated_fix_time'),
+            "code_snippet_fix": analysis.get('code_snippet_fix', ''),
+            "test_code": analysis.get('test_code', ''),
+            "code_file_path": analysis.get('code_file_path', '')
+        })
+    
+    return {
+        "status": "success",
+        "file": filename,
+        "failures_analyzed": len(results),
+        "results": results
+    }
+
+# ===== WEB UI (Enhanced with code display) =====
+
+UPLOAD_HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>TestNG Analyzer - Local Repository</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            padding: 40px;
+            max-width: 1000px;
+            width: 100%;
+        }
+        h1 { color: #333; margin-bottom: 10px; font-size: 32px; }
+        .subtitle { color: #666; margin-bottom: 30px; font-size: 14px; }
+        .repo-info {
+            background: #e3f2fd;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 25px;
+            border-left: 4px solid #2196f3;
+        }
+        .repo-info strong { color: #1976d2; }
+        .upload-section {
+            margin-bottom: 30px;
+            padding: 25px;
+            background: #f8f9fa;
+            border-radius: 12px;
+            border: 2px dashed #ddd;
+        }
+        h3 { color: #667eea; margin-bottom: 15px; font-size: 18px; }
+        input[type="file"] {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            font-size: 14px;
+            margin-bottom: 15px;
+        }
+        button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 12px 30px;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            width: 100%;
+        }
+        .status { margin-top: 20px; padding: 15px; border-radius: 8px; display: none; }
+        .status.success { background: #d4edda; color: #155724; display: block; }
+        .status.error { background: #f8d7da; color: #721c24; display: block; }
+        .status.loading { background: #d1ecf1; color: #0c5460; display: block; }
+        .results { margin-top: 30px; }
+        .result-item {
+            background: #fff;
+            border: 1px solid #e0e0e0;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .test-name { font-weight: bold; color: #667eea; margin-bottom: 12px; font-size: 18px; }
+        .confidence {
+            display: inline-block;
+            padding: 6px 14px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: bold;
+            margin-bottom: 15px;
+        }
+        .confidence.high { background: #d4edda; color: #155724; }
+        .confidence.medium { background: #fff3cd; color: #856404; }
+        .confidence.low { background: #f8d7da; color: #721c24; }
+        .code-section {
+            background: #282c34;
+            color: #abb2bf;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 15px 0;
+            overflow-x: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+        }
+        .code-section pre { margin: 0; white-space: pre-wrap; }
+        .file-path {
+            background: #e3f2fd;
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            color: #1976d2;
+            margin: 10px 0;
+            font-family: monospace;
+        }
+        .analysis-section {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 12px 0;
+            border-left: 4px solid #667eea;
+        }
+        .analysis-section strong { display: block; margin-bottom: 8px; color: #667eea; }
+        .spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+            margin: 10px auto;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔍 TestNG Analyzer with Local Code</h1>
+        <p class="subtitle">AI Analysis with YOUR actual test code • Powered by Claude 3.5 Sonnet</p>
+        
+        <div class="repo-info">
+            <strong>📁 Local Repository:</strong> {{ repo_path }}
+        </div>
+        
+        <div class="upload-section">
+            <h3>📁 Upload TestNG XML File</h3>
+            <form id="uploadForm" enctype="multipart/form-data">
+                <input type="file" id="fileInput" name="file" accept=".xml" required>
+                <button type="submit">Analyze with Local Code Context</button>
+            </form>
+        </div>
+        
+        <div id="status" class="status"></div>
+        <div id="results" class="results"></div>
+    </div>
+    
+    <script>
+        document.getElementById('uploadForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const formData = new FormData();
+            formData.append('file', document.getElementById('fileInput').files[0]);
+            showStatus('loading', '🤖 Analyzing with Claude AI and your local code... (30-60 seconds)');
+            
+            try {
+                const response = await fetch('/upload', { method: 'POST', body: formData });
+                const data = await response.json();
+                
+                if (data.status === 'success') {
+                    showStatus('success', `✅ Analyzed ${data.failures_analyzed} failures with local code context`);
+                    displayResults(data.results);
+                } else {
+                    showStatus('error', data.message || 'Failed');
+                }
+            } catch (error) {
+                showStatus('error', 'Error: ' + error.message);
+            }
+        });
+        
+        function showStatus(type, message) {
+            const statusDiv = document.getElementById('status');
+            statusDiv.className = 'status ' + type;
+            statusDiv.innerHTML = type === 'loading' ? '<div class="spinner"></div>' + message : message;
+        }
+        
+        function displayResults(results) {
+            const resultsDiv = document.getElementById('results');
+            if (!results || results.length === 0) return;
+            
+            let html = '<h3 style="margin: 30px 0 20px 0; color: #333;">📊 Code-Aware Analysis</h3>';
+            
+            results.forEach(result => {
+                html += `
+                    <div class="result-item">
+                        <div class="test-name">🧪 ${result.test_name}</div>
+                        <div class="confidence ${result.confidence}">${result.confidence.toUpperCase()} CONFIDENCE</div>
+                        
+                        ${result.code_file_path ? `<div class="file-path">📄 ${result.code_file_path}</div>` : ''}
+                        
+                        ${result.test_code ? `
+                            <div class="code-section">
+                                <strong style="color: #61dafb;">🔬 Your Actual Test Code:</strong>
+                                <pre>${escapeHtml(result.test_code)}</pre>
+                            </div>
+                        ` : ''}
+                        
+                        <div class="analysis-section">
+                            <strong>🔍 Root Cause</strong>
+                            ${result.root_cause}
+                        </div>
+                        
+                        <div class="analysis-section">
+                            <strong>💡 Suggested Fix</strong>
+                            ${result.suggested_fix}
+                        </div>
+                        
+                        ${result.code_snippet_fix ? `
+                            <div class="code-section">
+                                <strong style="color: #98c379;">✏️ Code Fix:</strong>
+                                <pre>${escapeHtml(result.code_snippet_fix)}</pre>
+                            </div>
+                        ` : ''}
+                        
+                        ${result.prevention_tips ? `
+                            <div class="analysis-section">
+                                <strong>🛡️ Prevention</strong>
+                                ${result.prevention_tips}
+                            </div>
+                        ` : ''}
+                    </div>
+                `;
+            });
+            
+            resultsDiv.innerHTML = html;
+        }
+        
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+    </script>
+</body>
+</html>
+"""
+
+# ===== API ROUTES =====
+
+@app.route('/', methods=['GET'])
+def index():
+    """Main UI"""
+    repo_display = LOCAL_REPO_PATH if LOCAL_REPO_PATH else "Not configured (set in config.json)"
+    return render_template_string(UPLOAD_HTML, repo_path=repo_display)
+
+@app.route('/upload', methods=['POST'])
+def upload_file():
+    """Handle file upload"""
+    try:
+        if 'file' not in request.files:
+            return jsonify({"status": "error", "message": "No file"}), 400
+        
+        file = request.files['file']
+        if file.filename == '' or not allowed_file(file.filename):
+            return jsonify({"status": "error", "message": "Invalid file"}), 400
+        
+        filename = secure_filename(file.filename)
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        file.save(filepath)
+        
+        print(f"\n📁 Processing: {filename}")
+        result = process_testng_file(filepath, filename)
+        return jsonify(result)
+    
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        traceback.print_exc()
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route('/results', methods=['GET'])
+def results():
+    """View all results"""
+    try:
+        conn = sqlite3.connect('failures.db')
+        c = conn.cursor()
+        c.execute('''
+            SELECT job_name, test_name, root_cause, suggested_fix, confidence, 
+                   failure_category, prevention_tips, estimated_fix_time, 
+                   test_code, code_file_path, timestamp
+            FROM analyses ORDER BY timestamp DESC LIMIT 50
+        ''')
+        rows = c.fetchall()
+        conn.close()
+        
+        results = [{
+            "job_name": r[0], "test_name": r[1], "root_cause": r[2], 
+            "suggested_fix": r[3], "confidence": r[4], "failure_category": r[5],
+            "prevention_tips": r[6], "estimated_fix_time": r[7], 
+            "test_code": r[8], "code_file_path": r[9], "timestamp": r[10]
+        } for r in rows]
+        
+        return jsonify({"results": results, "count": len(results)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/health', methods=['GET'])
+def health():
+    """Health check"""
+    return jsonify({
+        "status": "healthy",
+        "bedrock": "available" if bedrock_client else "unavailable",
+        "local_repo": LOCAL_REPO_PATH,
+        "version": "local-repo-analyzer"
+    })
+
+if __name__ == '__main__':
+    print("\n" + "="*70)
+    print("🚀 TestNG Analyzer - LOCAL REPOSITORY VERSION")
+    print("="*70)
+    print(f"🌐 Upload UI: http://localhost:5000")
+    print(f"📁 Local Repo: {LOCAL_REPO_PATH if LOCAL_REPO_PATH else 'NOT CONFIGURED'}")
+    print("="*70)
+    
+    if LOCAL_REPO_PATH and os.path.exists(LOCAL_REPO_PATH):
+        print(f"✅ Local repository found")
+        # Count test files
+        test_files = []
+        for root, dirs, files in os.walk(LOCAL_REPO_PATH):
+            test_files.extend([f for f in files if f.endswith('.java') and 'test' in root.lower()])
+        print(f"✅ Found {len(test_files)} test files")
+    else:
+        print(f"⚠️  Local repository not configured or not found")
+        print(f"   Set 'local_repo_path' in config.json")
+    
+    if bedrock_client:
+        print(f"✅ AWS Bedrock: Connected")
+    else:
+        print(f"⚠️  AWS Bedrock: NOT AVAILABLE")
+    
+    print("="*70 + "\n")
+    
+    app.run(host='0.0.0.0', port=5000, debug=True)

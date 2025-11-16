@@ -1,0 +1,45 @@
+﻿# Add this to the prompt building section (in analyze_with_bedrock function)
+
+# Include training in the prompt
+prompt = f"""
+{TRAINING_CONTENT}
+
+---
+
+Now analyze this test failure using the 6-step process above:
+
+Test Name: {test_name}
+Class: {class_name}
+Error Message: {error_message}
+Stack Trace:
+{stack_trace}
+
+Test Code from Repository:
+{test_code}
+
+Related Code Files:
+{related_code}
+
+Apply the 6 steps and provide KEY INSIGHTS ONLY in this format:
+
+### 🎯 Root Cause
+[Brief explanation]
+
+### 🔍 What to Check
+1. [Point 1]
+2. [Point 2]
+3. [Point 3]
+
+### 💡 Recommended Fix
+[Minimal code snippet with issue]
+
+### 🛠️ Specific Changes
+**File:** [filename]
+**Line:** [line number]
+**Issue:** [description]
+
+### ⏱️ Estimated Fix Time: [X minutes]
+### 🎯 Confidence: [HIGH/MEDIUM/LOW (XX%)]
+### 📁 Category: [category]
+"""
+

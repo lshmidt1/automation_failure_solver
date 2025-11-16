@@ -1,0 +1,11 @@
+﻿# Add this near the top of app_testng_local_repo.py (after imports)
+
+# Load training content on startup
+TRAINING_CONTENT = ""
+try:
+    with open('AGENT_TRAINING.md', 'r', encoding='utf-8') as f:
+        TRAINING_CONTENT = f.read()
+    print("✅ Loaded agent training file")
+except Exception as e:
+    print(f"⚠️ Could not load AGENT_TRAINING.md: {e}")
+
