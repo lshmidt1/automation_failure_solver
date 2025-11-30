@@ -1,0 +1,68 @@
+# Debug Configuration
+debug:
+  enabled: true
+  level: "DEBUG"  # DEBUG, INFO, WARNING, ERROR
+  
+  # What to debug
+  stages:
+    xml_fetcher: true
+    local_repo_access: true
+    local_executor: true
+    results_collector: true
+    root_cause_analyzer: true
+    report_generator: true
+  
+  # Debug outputs
+  outputs:
+    console: true
+    file: true
+    file_path: "debug/debug.log"
+  
+  # What to log
+  log_state: true           # Log state after each stage
+  log_llm_prompts: true     # Log full LLM prompts
+  log_llm_responses: true   # Log full LLM responses
+  log_file_contents: false  # Log file contents (can be large)
+  log_test_output: true     # Log test execution output
+  log_errors_full: true     # Full error traces
+  
+  # Performance tracking
+  track_timing: true
+  track_memory: false
+  
+  # Breakpoints (pause at specific stages)
+  breakpoints:
+    enabled: false
+    stages: []  # e.g., ["root_cause_analyzer", "report_generator"]
+  
+  # Save intermediate results
+  save_intermediate:
+    enabled: true
+    path: "debug/intermediate"
+    formats: ["json", "txt"]
+
+# Override main config for debug mode
+llm:
+  provider: "bedrock"
+  model: "anthropic.claude-3-5-sonnet-20241022-v2:0"
+  region: "${AWS_REGION}"
+  temperature: 0.3
+  max_tokens: 2000
+
+execution:
+  install_dependencies: true
+  dependency_timeout: 300
+  execution_timeout: 600
+  test_command: "pytest -v"
+  environment: "sandbox"
+  file_extensions:
+    - ". py"
+    - ".js"
+    - ".sh"
+    - ".ps1"
+    - ".yaml"
+    - ".yml"
+
+logging:
+  level: "DEBUG"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"

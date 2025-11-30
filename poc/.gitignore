@@ -1,0 +1,9 @@
+# LangGraph POC
+config/config.yaml
+.env
+reports/
+*.xml
+langgraph_poc/**/__pycache__/
+*.pyc
+__pycache__/
+.pytest_cache/
